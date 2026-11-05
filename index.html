@@ -1,0 +1,176 @@
+<!doctype html>
+<html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Mariscos · Finanzas</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><circle cx='50' cy='50' r='48' fill='%230e7c9b'/><text x='50' y='68' font-size='58' font-family='Arial' font-weight='bold' text-anchor='middle' fill='white'>M</text></svg>">
+<style>
+:root{--bg:#eaf6f8;--card:#fff;--ink:#0f2a3d;--mut:#5b7586;--line:#d5e7ec;--pri:#0e7c9b;--ok:#16a34a;--bad:#e11d48;--coral:#ff6b4a;--sun:#ffc83d;--navy:#0b2e45;--r:16px}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+body{margin:0;font-family:system-ui,Segoe UI,Roboto,sans-serif;background:var(--bg);color:var(--ink);font-size:17px}
+button{font:inherit;border:1px solid var(--line);border-radius:var(--r);padding:12px 16px;background:#fff;color:var(--ink);min-height:48px;cursor:pointer;box-shadow:0 2px 6px #0b2e4518}
+button.pri{background:linear-gradient(135deg,#0e9bbd,#0a5f78);color:#fff;border:0}
+button.bad{background:linear-gradient(135deg,#fb7185,#e11d48);color:#fff;border:0}
+button:disabled{opacity:.5}
+input,select,textarea{font:inherit;width:100%;padding:12px;border:1px solid #cbd5e1;border-radius:10px;background:#fff;color:var(--ink)}
+label{display:block;margin:10px 0 4px;color:var(--mut);font-size:15px}
+.top{display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding:10px 12px;background:linear-gradient(90deg,#0b2e45,#0e7c9b 70%,#ff6b4a);color:#fff;position:sticky;top:0;z-index:5}
+.top b{margin-right:auto;font-size:19px}
+.top button{background:#ffffff26;color:#fff;border:0;box-shadow:none;min-height:42px;padding:8px 14px}
+.top button.on{background:var(--sun);color:var(--navy);font-weight:700}
+main{max-width:980px;margin:0 auto;padding:12px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:var(--r);padding:14px;box-shadow:0 4px 14px #0b2e4512;margin-bottom:12px}
+.row{display:flex;gap:10px;align-items:center}.grow{flex:1}.wrap{flex-wrap:wrap}
+.mut{color:var(--mut)}.big{font-size:26px;font-weight:700;color:var(--navy)}.right{text-align:right}
+.stat{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px;margin-bottom:12px}
+.stat .card{margin:0}
+.ok{color:var(--ok)}.neg{color:var(--bad)}
+.scroll{overflow-x:auto}
+table{border-collapse:collapse;width:100%;min-width:560px}th,td{padding:9px 8px;border-bottom:1px solid var(--line);text-align:left;white-space:nowrap}
+th.r,td.r{text-align:right}tr.hoy td{background:#fff7d6}
+.login{max-width:380px;margin:12vh auto;padding:0 14px}
+.marca{text-align:center}.marca h1{margin:6px 0;color:var(--navy)}.marca h1 span{color:var(--coral)}
+.toast{position:fixed;bottom:16px;left:50%;transform:translateX(-50%);background:#111827;color:#fff;padding:12px 18px;border-radius:12px;z-index:50;max-width:92vw}
+.toast.bad{background:var(--bad)}.toast.ok{background:var(--ok)}
+.modal{position:fixed;inset:0;background:#0007;display:flex;align-items:center;justify-content:center;z-index:20;padding:12px}
+.modal>div{background:#fff;border-radius:20px;padding:18px;max-width:480px;width:100%;max-height:94vh;overflow:auto}
+.chip{display:inline-block;padding:2px 10px;border-radius:999px;font-size:13px;background:#e0f2fe;color:#075985}
+.chip.sueldo{background:#fef3c7;color:#92400e}.chip.otro{background:#ede9fe;color:#5b21b6}
+.hide{display:none}
+</style></head>
+<body>
+<div id="app"></div>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.min.js"></script>
+<script>
+// ====== CONFIGURACIÓN (la llave anon/public NO es secreta; la protección está en RLS) ======
+const SUPABASE_URL = 'https://bvkyfhoewtexuhsqjtwy.supabase.co';
+const SUPABASE_ANON_KEY = 'sb_publishable_wj62vjdUDrTgcGvvkrllaw_Zpp9QB28';
+const CUENTA = 'finanzas@mariscoselprimo.com';   // cuenta unica; en la pantalla solo se pide la contrasena
+// ==========================================================================================
+const $ = (s, r = document) => r.querySelector(s);
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const money = n => '$' + (Math.round((+n || 0) * 100) / 100).toLocaleString('es-MX', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+const pad = n => String(n).padStart(2, '0');
+const ymd = d => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+const hoy = () => ymd(new Date());
+const DIAS = ['Lun', 'Mar', 'Mié', 'Jue', 'Vie', 'Sáb', 'Dom'];
+const lunes = (f) => { const [y, m, d] = f.split('-').map(Number); const dt = new Date(y, m - 1, d); dt.setDate(dt.getDate() - ((dt.getDay() + 6) % 7)); return dt; };
+function toast(m, t = '') { const d = document.createElement('div'); d.className = 'toast ' + t; d.textContent = m; document.body.appendChild(d); setTimeout(() => d.remove(), t === 'bad' ? 5000 : 2200); }
+async function run(fn) { try { return await fn(); } catch (e) { toast(e.message || String(e), 'bad'); } }
+const ok = r => { if (r.error) throw new Error(r.error.message); return r.data; };
+
+const sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+let PERFIL = null, TAB = 'semana', SEMANA = hoy(), PRE = null;
+const app = $('#app');
+
+function login(msg = '') {
+  app.innerHTML = `<div class="login"><div class="marca"><div style="font-size:54px">🦐🐟🦀</div><h1>Mariscos <span>El Primo</span></h1><p class="mut">Finanzas</p></div>
+    <div class="card"><label>Contraseña</label><input id="pw" type="password" autocomplete="current-password" autofocus>
+    <p class="neg" id="er">${esc(msg)}</p><button class="pri" style="width:100%" id="go">Entrar</button></div></div>`;
+  $('#go').onclick = async () => {
+    const r = await sb.auth.signInWithPassword({ email: CUENTA, password: $('#pw').value });
+    if (r.error) return $('#er').textContent = 'Contraseña incorrecta';
+    iniciar();
+  };
+  $('#pw').addEventListener('keydown', e => e.key === 'Enter' && $('#go').click());
+}
+async function iniciar() {
+  const { data: { session } } = await sb.auth.getSession();
+  if (!session) return login();
+  const r = await sb.from('perfiles').select('nombre,rol').eq('user_id', session.user.id).maybeSingle();
+  if (!r.data || r.data.rol === 'sync') { await sb.auth.signOut(); return login('Esta cuenta no tiene acceso a Finanzas'); }
+  PERFIL = r.data; TAB = PERFIL.rol === 'admin' ? 'semana' : 'salidas'; pintar();
+}
+function marco() {
+  const t = PERFIL.rol === 'admin' ? [['semana', 'Semana'], ['salidas', 'Salidas'], ['proveedores', 'Proveedores'], ['personal', 'Personal']] : [['salidas', 'Salidas']];
+  app.innerHTML = `<div class="top"><b>🦐 Mariscos · ${esc(PERFIL.nombre)}</b>${t.map(([k, n]) => `<button class="${TAB === k ? 'on' : ''}" data-t="${k}">${n}</button>`).join('')}<button id="sal">Salir</button></div><main id="m"></main>`;
+  app.querySelectorAll('[data-t]').forEach(b => b.onclick = () => { TAB = b.dataset.t; pintar(); });
+  $('#sal').onclick = async () => { await sb.auth.signOut(); login(); };
+}
+function pintar() { marco(); run(() => ({ semana, salidas, proveedores, personal })[TAB]()); }
+
+// ---------- SEMANA ----------
+async function semana() {
+  const lun = lunes(SEMANA), dias = [];
+  for (let i = 0; i < 7; i++) { const d = new Date(lun); d.setDate(lun.getDate() + i); dias.push({ f: ymd(d), n: DIAS[i], ventas: 0, propinas: 0, efectivo: 0, tarjeta: 0, transferencia: 0, otro: 0, prov: 0, sueldos: 0, otros: 0, cortes: 0 }); }
+  const desde = dias[0].f, hasta = dias[6].f;
+  const [cortes, egr, emps] = await Promise.all([
+    sb.from('cortes').select('*').gte('fecha', desde).lte('fecha', hasta).then(ok),
+    sb.from('egresos').select('*,proveedores(nombre),empleados(nombre)').gte('fecha', desde).lte('fecha', hasta).eq('cancelado', false).order('fecha').then(ok),
+    sb.from('empleados').select('*').eq('activo', true).gt('sueldo_semanal', 0).order('nombre').then(ok)]);
+  for (const c of cortes) { const d = dias.find(x => x.f === c.fecha); if (!d) continue; d.ventas += +c.ventas_netas; d.propinas += +c.propinas; d.efectivo += +c.efectivo; d.tarjeta += +c.tarjeta; d.transferencia += +c.transferencia; d.otro += +c.otro; d.cortes++; }
+  const porProv = {};
+  for (const e of egr) { const d = dias.find(x => x.f === e.fecha); const k = e.tipo === 'proveedor' ? 'prov' : e.tipo === 'sueldo' ? 'sueldos' : 'otros'; d[k] += +e.monto; if (e.tipo === 'proveedor') porProv[e.proveedores?.nombre || '—'] = (porProv[e.proveedores?.nombre || '—'] || 0) + +e.monto; }
+  dias.forEach(d => { d.sal = d.prov + d.sueldos + d.otros; d.bal = d.ventas - d.sal; });
+  const S = k => dias.reduce((s, d) => s + d[k], 0), T = { ventas: S('ventas'), sal: S('sal'), bal: S('bal'), prov: S('prov'), sueldos: S('sueldos'), otros: S('otros'), propinas: S('propinas') };
+  const pagados = new Set(egr.filter(e => e.tipo === 'sueldo').map(e => e.empleado_id)), pend = emps.filter(e => !pagados.has(e.id));
+  $('#m').innerHTML = `<div class="row wrap" style="margin-bottom:12px"><button id="ant">←</button><div class="grow right" style="text-align:center"><b>Semana del ${desde.split('-').reverse().join('/')} al ${hasta.split('-').reverse().join('/')}</b></div><button id="sig">→</button><button id="hoyb">Hoy</button></div>
+    <div class="stat"><div class="card"><div class="mut">Entradas (ventas)</div><div class="big">${money(T.ventas)}</div></div>
+      <div class="card"><div class="mut">Salidas</div><div class="big">${money(T.sal)}</div></div>
+      <div class="card"><div class="mut">Balance</div><div class="big ${T.bal < 0 ? 'neg' : 'ok'}">${money(T.bal)}</div></div>
+      <div class="card"><div class="mut">Propinas (no cuentan)</div><div class="big">${money(T.propinas)}</div></div></div>
+    <div class="card scroll"><table><tr><th>Día</th><th class="r">Ventas</th><th class="r">Efectivo</th><th class="r">Tarjeta</th><th class="r">Transf.</th><th class="r">Proveed.</th><th class="r">Sueldos</th><th class="r">Otros</th><th class="r">Balance</th></tr>
+    ${dias.map(d => `<tr class="${d.f === hoy() ? 'hoy' : ''}"><td>${d.n} ${d.f.slice(8)}${d.cortes ? '' : ' <span class="mut">·sin corte</span>'}</td><td class="r">${money(d.ventas)}</td><td class="r">${money(d.efectivo)}</td><td class="r">${money(d.tarjeta)}</td><td class="r">${money(d.transferencia)}</td><td class="r">${money(d.prov)}</td><td class="r">${money(d.sueldos)}</td><td class="r">${money(d.otros)}</td><td class="r ${d.bal < 0 ? 'neg' : ''}"><b>${money(d.bal)}</b></td></tr>`).join('')}
+    <tr><td><b>Total</b></td><td class="r"><b>${money(T.ventas)}</b></td><td class="r">${money(S('efectivo'))}</td><td class="r">${money(S('tarjeta'))}</td><td class="r">${money(S('transferencia'))}</td><td class="r"><b>${money(T.prov)}</b></td><td class="r"><b>${money(T.sueldos)}</b></td><td class="r"><b>${money(T.otros)}</b></td><td class="r ${T.bal < 0 ? 'neg' : ''}"><b>${money(T.bal)}</b></td></tr></table></div>
+    <div class="card"><b>Sueldos por pagar esta semana</b>${pend.map(e => `<div class="row" style="padding:8px 0;border-bottom:1px solid var(--line)"><span class="grow">${esc(e.nombre)} <span class="mut">${esc(e.puesto)}</span></span><b>${money(e.sueldo_semanal)}</b><button data-pg="${e.id}" style="min-height:40px;padding:6px 12px">Pagar</button></div>`).join('') || '<p class="mut" style="margin:6px 0">Todos pagados (o no hay sueldos dados de alta).</p>'}</div>
+    <div class="card"><b>Pagado a proveedores</b>${Object.entries(porProv).sort((a, b) => b[1] - a[1]).map(([n, m]) => `<div class="row" style="padding:6px 0"><span class="grow">${esc(n)}</span><b>${money(m)}</b></div>`).join('') || '<p class="mut" style="margin:6px 0">Sin pagos esta semana.</p>'}</div>
+    <div class="card"><b>Salidas de la semana</b>${egr.map(e => `<div class="row" style="padding:8px 0;border-bottom:1px solid var(--line)"><span class="grow"><span class="chip ${e.tipo}">${e.tipo}</span> ${esc(e.concepto)}<br><small class="mut">${e.fecha.slice(8)}/${e.fecha.slice(5, 7)} · ${esc(e.proveedores?.nombre || e.empleados?.nombre || '')} · ${e.forma_pago}</small></span><b>${money(e.monto)}</b><button data-x="${e.id}" style="min-height:38px;padding:4px 10px">✕</button></div>`).join('') || '<p class="mut" style="margin:6px 0">Sin salidas.</p>'}</div>`;
+  const mover = n => { const d = lunes(SEMANA); d.setDate(d.getDate() + n); SEMANA = ymd(d); run(semana); };
+  $('#ant').onclick = () => mover(-7); $('#sig').onclick = () => mover(7); $('#hoyb').onclick = () => { SEMANA = hoy(); run(semana); };
+  document.querySelectorAll('[data-pg]').forEach(b => b.onclick = () => { const e = pend.find(x => x.id == b.dataset.pg); PRE = { tipo: 'sueldo', empleado_id: e.id, concepto: 'Sueldo semana ' + desde.slice(5).split('-').reverse().join('/'), monto: e.sueldo_semanal }; TAB = 'salidas'; pintar(); });
+  document.querySelectorAll('[data-x]').forEach(b => b.onclick = () => { if (confirm('¿Cancelar esta salida?')) run(async () => { ok(await sb.from('egresos').update({ cancelado: true }).eq('id', b.dataset.x)); toast('Cancelada', 'ok'); semana(); }); });
+}
+
+// ---------- SALIDAS (captura) ----------
+async function salidas() {
+  const admin = PERFIL.rol === 'admin';
+  const [provs, emps] = await Promise.all([sb.from('proveedores').select('id,nombre').eq('activo', true).order('nombre').then(ok), admin ? sb.from('empleados').select('id,nombre,sueldo_semanal').eq('activo', true).order('nombre').then(ok) : []]);
+  const p = PRE || {}; PRE = null;
+  const ult = await sb.from('egresos').select('*,proveedores(nombre),empleados(nombre)').eq('cancelado', false).order('id', { ascending: false }).limit(15).then(ok);
+  $('#m').innerHTML = `<div class="card"><b style="font-size:20px">Registrar salida</b>
+    <label>Tipo</label><select id="tp"><option value="proveedor">Pago a proveedor</option>${admin ? '<option value="sueldo">Sueldo</option>' : ''}<option value="otro">Otro gasto</option></select>
+    <div id="bp"><label>Proveedor</label><select id="pv"><option value="">— elige —</option>${provs.map(x => `<option value="${x.id}">${esc(x.nombre)}</option>`).join('')}</select></div>
+    <div id="be" class="hide"><label>Empleado</label><select id="em"><option value="">— elige —</option>${emps.map(x => `<option value="${x.id}" data-s="${x.sueldo_semanal}">${esc(x.nombre)}</option>`).join('')}</select></div>
+    <label>Concepto</label><input id="cn" maxlength="100" placeholder="Ej. camarón 20 kg, renta, gas…">
+    <label>Monto</label><input id="mt" type="number" inputmode="decimal" step="0.01" min="0">
+    <label>Forma de pago</label><select id="fp"><option value="efectivo">Efectivo</option><option value="transferencia">Transferencia</option><option value="tarjeta">Tarjeta</option><option value="otro">Otro</option></select>
+    ${admin ? `<label>Fecha</label><input id="fe" type="date" value="${hoy()}">` : ''}
+    <label>Nota (opcional)</label><input id="nt" maxlength="200">
+    <button class="pri" style="width:100%;margin-top:14px" id="gd">Guardar salida</button></div>
+    <div class="card"><b>Últimas salidas</b>${ult.map(e => `<div class="row" style="padding:8px 0;border-bottom:1px solid var(--line)"><span class="grow"><span class="chip ${e.tipo}">${e.tipo}</span> ${esc(e.concepto)}<br><small class="mut">${e.fecha.slice(8)}/${e.fecha.slice(5, 7)} · ${esc(e.proveedores?.nombre || e.empleados?.nombre || '')}</small></span><b>${money(e.monto)}</b></div>`).join('') || '<p class="mut">Aún no hay salidas.</p>'}</div>`;
+  const ver = () => { const t = $('#tp').value; $('#bp').classList.toggle('hide', t !== 'proveedor'); $('#be').classList.toggle('hide', t !== 'sueldo'); };
+  $('#tp').onchange = ver;
+  $('#em').onchange = () => { const o = $('#em').selectedOptions[0]; if (o && o.dataset.s) { $('#mt').value = o.dataset.s; if (!$('#cn').value) $('#cn').value = 'Sueldo semanal'; } };
+  if (p.tipo) { $('#tp').value = p.tipo; ver(); if (p.empleado_id) $('#em').value = p.empleado_id; $('#cn').value = p.concepto || ''; $('#mt').value = p.monto || ''; }
+  $('#gd').onclick = () => run(async () => {
+    const t = $('#tp').value, fila = { tipo: t, concepto: $('#cn').value.trim(), monto: +$('#mt').value, forma_pago: $('#fp').value, nota: $('#nt').value.trim(), fecha: admin ? $('#fe').value : hoy() };
+    if (!fila.concepto) throw new Error('Falta el concepto'); if (!(fila.monto > 0)) throw new Error('El monto debe ser mayor a cero');
+    if (t === 'proveedor') { if (!$('#pv').value) throw new Error('Elige un proveedor'); fila.proveedor_id = +$('#pv').value; }
+    if (t === 'sueldo') { if (!$('#em').value) throw new Error('Elige al empleado'); fila.empleado_id = +$('#em').value; }
+    ok(await sb.from('egresos').insert(fila)); toast('Salida guardada ✔', 'ok'); salidas();
+  });
+}
+
+// ---------- catálogos ----------
+async function catalogo(tabla, titulo, campos, cols) {
+  const filas = await sb.from(tabla).select('*').order('nombre').then(ok);
+  $('#m').innerHTML = `<div class="row" style="margin-bottom:10px"><b class="grow" style="font-size:20px">${titulo}</b><button class="pri" id="nv">+ Agregar</button></div>
+    <div class="card scroll"><table><tr>${cols.map(c => `<th>${c[1]}</th>`).join('')}<th></th></tr>${filas.map(f => `<tr style="${f.activo ? '' : 'opacity:.45'}">${cols.map(c => `<td>${c[2] ? c[2](f[c[0]]) : esc(f[c[0]])}</td>`).join('')}<td class="r"><button data-e="${f.id}" style="min-height:38px;padding:4px 12px">Editar</button></td></tr>`).join('') || '<tr><td class="mut">Vacío</td></tr>'}</table></div>`;
+  const form = f => {
+    f = f || { activo: true };
+    const m = document.createElement('div'); m.className = 'modal';
+    m.innerHTML = `<div><h3 style="margin-top:0">${f.id ? 'Editar' : 'Agregar'}</h3>${campos.map(c => `<label>${c[1]}</label><input data-k="${c[0]}" ${c[2] === 'num' ? 'type="number" inputmode="decimal" step="0.01"' : ''} value="${esc(f[c[0]] ?? '')}">`).join('')}<label>Activo</label><select data-k="activo"><option value="true" ${f.activo ? 'selected' : ''}>Sí</option><option value="false" ${f.activo ? '' : 'selected'}>No</option></select>
+      <div class="row" style="margin-top:14px"><button class="grow" data-c>Cancelar</button><button class="pri grow" data-s>Guardar</button></div></div>`;
+    document.body.appendChild(m); $('[data-c]', m).onclick = () => m.remove();
+    $('[data-s]', m).onclick = () => run(async () => {
+      const o = {}; m.querySelectorAll('[data-k]').forEach(e => { let v = e.value; if (e.dataset.k === 'activo') v = v === 'true'; else if (e.type === 'number') v = +v || 0; o[e.dataset.k] = v; });
+      if (!String(o.nombre || '').trim()) throw new Error('Falta el nombre');
+      ok(f.id ? await sb.from(tabla).update(o).eq('id', f.id) : await sb.from(tabla).insert(o)); m.remove(); toast('Guardado', 'ok'); catalogo(tabla, titulo, campos, cols);
+    });
+  };
+  $('#nv').onclick = () => form(); document.querySelectorAll('[data-e]').forEach(b => b.onclick = () => form(filas.find(x => x.id == b.dataset.e)));
+}
+const proveedores = () => catalogo('proveedores', 'Proveedores', [['nombre', 'Nombre'], ['telefono', 'Teléfono'], ['nota', 'Nota']], [['nombre', 'Nombre'], ['telefono', 'Teléfono'], ['nota', 'Nota']]);
+const personal = () => catalogo('empleados', 'Personal y sueldos', [['nombre', 'Nombre'], ['puesto', 'Puesto'], ['sueldo_semanal', 'Sueldo semanal', 'num']], [['nombre', 'Nombre'], ['puesto', 'Puesto'], ['sueldo_semanal', 'Sueldo semanal', money]]);
+
+if (SUPABASE_ANON_KEY.startsWith('PEGAR')) app.innerHTML = '<div class="login"><div class="card"><b>Falta configurar</b><p>Pega la llave anon/public de Supabase en <code>index.html</code> (constante SUPABASE_ANON_KEY).</p></div></div>';
+else iniciar();
+</script></body></html>
