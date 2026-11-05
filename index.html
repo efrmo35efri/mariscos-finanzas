@@ -58,7 +58,7 @@ async function run(fn) { try { return await fn(); } catch (e) { toast(e.message 
 const ok = r => { if (r.error) throw new Error(r.error.message); return r.data; };
 
 const sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
-let PERFIL = null, TAB = 'semana', SEMANA = hoy(), PRE = null;
+let PERFIL = null, TAB = 'semana', PRE = null;
 const app = $('#app');
 
 function login(msg = '') {
@@ -80,43 +80,191 @@ async function iniciar() {
   PERFIL = r.data; TAB = PERFIL.rol === 'admin' ? 'semana' : 'salidas'; pintar();
 }
 function marco() {
-  const t = PERFIL.rol === 'admin' ? [['semana', 'Semana'], ['salidas', 'Salidas'], ['proveedores', 'Proveedores'], ['personal', 'Personal']] : [['salidas', 'Salidas']];
+  const t = PERFIL.rol === 'admin' ? [['semana', 'Resumen'], ['reportes', 'Reportes'], ['salidas', 'Salidas'], ['proveedores', 'Proveedores'], ['personal', 'Personal']] : [['salidas', 'Salidas']];
   app.innerHTML = `<div class="top"><b>🦐 Mariscos · ${esc(PERFIL.nombre)}</b>${t.map(([k, n]) => `<button class="${TAB === k ? 'on' : ''}" data-t="${k}">${n}</button>`).join('')}<button id="sal">Salir</button></div><main id="m"></main>`;
   app.querySelectorAll('[data-t]').forEach(b => b.onclick = () => { TAB = b.dataset.t; pintar(); });
   $('#sal').onclick = async () => { await sb.auth.signOut(); login(); };
 }
-function pintar() { marco(); run(() => ({ semana, salidas, proveedores, personal })[TAB]()); }
+function pintar() { marco(); run(() => ({ semana, reportes, salidas, proveedores, personal })[TAB]()); }
 
-// ---------- SEMANA ----------
+// ---------- REPORTE ----------
+let REP = { per: 'semana', ref: hoy(), d1: hoy(), d2: hoy(), tipo: 'todo', prov: '', todas: false };
+const MESES = ['ene', 'feb', 'mar', 'abr', 'may', 'jun', 'jul', 'ago', 'sep', 'oct', 'nov', 'dic'];
+const fd = f => { const [, m, d] = f.split('-'); return `${+d} ${MESES[m - 1]}`; };
+const fdia = f => { const [y, m, d] = f.split('-').map(Number); return DIAS[(new Date(y, m - 1, d).getDay() + 6) % 7] + ' ' + fd(f); };
+function rangoRep() {
+  const [y, m] = REP.ref.split('-').map(Number);
+  if (REP.per === 'dia') return [REP.ref, REP.ref];
+  if (REP.per === 'semana') { const l = lunes(REP.ref), f = new Date(l); f.setDate(l.getDate() + 6); return [ymd(l), ymd(f)]; }
+  if (REP.per === 'mes') return [ymd(new Date(y, m - 1, 1)), ymd(new Date(y, m, 0))];
+  return [REP.d1, REP.d2];
+}
+function moverRep(n) {
+  const [y, m, d] = REP.ref.split('-').map(Number), dt = new Date(y, m - 1, d);
+  if (REP.per === 'dia') dt.setDate(dt.getDate() + n); else if (REP.per === 'semana') dt.setDate(dt.getDate() + 7 * n); else dt.setMonth(dt.getMonth() + n, 1);
+  REP.ref = ymd(dt);
+}
+
 async function semana() {
-  const lun = lunes(SEMANA), dias = [];
-  for (let i = 0; i < 7; i++) { const d = new Date(lun); d.setDate(lun.getDate() + i); dias.push({ f: ymd(d), n: DIAS[i], ventas: 0, propinas: 0, efectivo: 0, tarjeta: 0, transferencia: 0, otro: 0, prov: 0, sueldos: 0, otros: 0, cortes: 0 }); }
-  const desde = dias[0].f, hasta = dias[6].f;
+  const [desde, hasta] = rangoRep();
+  if (desde > hasta) throw new Error('La fecha inicial es mayor que la final');
   const [cortes, egr, emps] = await Promise.all([
-    sb.from('cortes').select('*').gte('fecha', desde).lte('fecha', hasta).then(ok),
-    sb.from('egresos').select('*,proveedores(nombre),empleados(nombre)').gte('fecha', desde).lte('fecha', hasta).eq('cancelado', false).order('fecha').then(ok),
-    sb.from('empleados').select('*').eq('activo', true).gt('sueldo_semanal', 0).order('nombre').then(ok)]);
-  for (const c of cortes) { const d = dias.find(x => x.f === c.fecha); if (!d) continue; d.ventas += +c.ventas_netas; d.propinas += +c.propinas; d.efectivo += +c.efectivo; d.tarjeta += +c.tarjeta; d.transferencia += +c.transferencia; d.otro += +c.otro; d.cortes++; }
-  const porProv = {};
-  for (const e of egr) { const d = dias.find(x => x.f === e.fecha); const k = e.tipo === 'proveedor' ? 'prov' : e.tipo === 'sueldo' ? 'sueldos' : 'otros'; d[k] += +e.monto; if (e.tipo === 'proveedor') porProv[e.proveedores?.nombre || '—'] = (porProv[e.proveedores?.nombre || '—'] || 0) + +e.monto; }
-  dias.forEach(d => { d.sal = d.prov + d.sueldos + d.otros; d.bal = d.ventas - d.sal; });
-  const S = k => dias.reduce((s, d) => s + d[k], 0), T = { ventas: S('ventas'), sal: S('sal'), bal: S('bal'), prov: S('prov'), sueldos: S('sueldos'), otros: S('otros'), propinas: S('propinas') };
+    sb.from('cortes').select('fecha,ventas_netas,propinas,efectivo,tarjeta,transferencia,otro').gte('fecha', desde).lte('fecha', hasta).then(ok),
+    sb.from('egresos').select('*,proveedores(nombre),empleados(nombre)').gte('fecha', desde).lte('fecha', hasta).eq('cancelado', false).order('fecha', { ascending: false }).order('id', { ascending: false }).then(ok),
+    REP.per === 'semana' ? sb.from('empleados').select('*').eq('activo', true).gt('sueldo_semanal', 0).order('nombre').then(ok) : []]);
+
+  const dias = {}, D = f => dias[f] || (dias[f] = { f, ventas: 0, efectivo: 0, tarjeta: 0, transferencia: 0, otro: 0, sal: 0, eg: [] });
+  let propinas = 0;
+  for (const c of cortes) { const d = D(c.fecha); d.ventas += +c.ventas_netas; d.efectivo += +c.efectivo; d.tarjeta += +c.tarjeta; d.transferencia += +c.transferencia; d.otro += +c.otro; propinas += +c.propinas; }
+  for (const e of egr) { const d = D(e.fecha); d.sal += +e.monto; d.eg.push(e); }
+  const lista = Object.values(dias).sort((a, b) => a.f < b.f ? -1 : 1);
+  const ventas = lista.reduce((s, d) => s + d.ventas, 0), sal = lista.reduce((s, d) => s + d.sal, 0), bal = ventas - sal;
+  const nombreE = e => e.proveedores?.nombre || e.empleados?.nombre || '';
+
+  // filtros de salidas
+  const provs = {}; egr.filter(e => e.tipo === 'proveedor').forEach(e => { const n = nombreE(e) || '—'; provs[n] = (provs[n] || 0) + +e.monto; });
+  if (REP.prov && !provs[REP.prov]) REP.prov = '';
+  const fil = egr.filter(e => (REP.tipo === 'todo' || e.tipo === REP.tipo) && (!REP.prov || (e.tipo === 'proveedor' && nombreE(e) === REP.prov)));
+  const totFil = fil.reduce((s, e) => s + +e.monto, 0), vis = REP.todas ? fil : fil.slice(0, 8);
+
   const pagados = new Set(egr.filter(e => e.tipo === 'sueldo').map(e => e.empleado_id)), pend = emps.filter(e => !pagados.has(e.id));
-  $('#m').innerHTML = `<div class="row wrap" style="margin-bottom:12px"><button id="ant">←</button><div class="grow right" style="text-align:center"><b>Semana del ${desde.split('-').reverse().join('/')} al ${hasta.split('-').reverse().join('/')}</b></div><button id="sig">→</button><button id="hoyb">Hoy</button></div>
-    <div class="stat"><div class="card"><div class="mut">Entradas (ventas)</div><div class="big">${money(T.ventas)}</div></div>
-      <div class="card"><div class="mut">Salidas</div><div class="big">${money(T.sal)}</div></div>
-      <div class="card"><div class="mut">Balance</div><div class="big ${T.bal < 0 ? 'neg' : 'ok'}">${money(T.bal)}</div></div>
-      <div class="card"><div class="mut">Propinas (no cuentan)</div><div class="big">${money(T.propinas)}</div></div></div>
-    <div class="card scroll"><table><tr><th>Día</th><th class="r">Ventas</th><th class="r">Efectivo</th><th class="r">Tarjeta</th><th class="r">Transf.</th><th class="r">Proveed.</th><th class="r">Sueldos</th><th class="r">Otros</th><th class="r">Balance</th></tr>
-    ${dias.map(d => `<tr class="${d.f === hoy() ? 'hoy' : ''}"><td>${d.n} ${d.f.slice(8)}${d.cortes ? '' : ' <span class="mut">·sin corte</span>'}</td><td class="r">${money(d.ventas)}</td><td class="r">${money(d.efectivo)}</td><td class="r">${money(d.tarjeta)}</td><td class="r">${money(d.transferencia)}</td><td class="r">${money(d.prov)}</td><td class="r">${money(d.sueldos)}</td><td class="r">${money(d.otros)}</td><td class="r ${d.bal < 0 ? 'neg' : ''}"><b>${money(d.bal)}</b></td></tr>`).join('')}
-    <tr><td><b>Total</b></td><td class="r"><b>${money(T.ventas)}</b></td><td class="r">${money(S('efectivo'))}</td><td class="r">${money(S('tarjeta'))}</td><td class="r">${money(S('transferencia'))}</td><td class="r"><b>${money(T.prov)}</b></td><td class="r"><b>${money(T.sueldos)}</b></td><td class="r"><b>${money(T.otros)}</b></td><td class="r ${T.bal < 0 ? 'neg' : ''}"><b>${money(T.bal)}</b></td></tr></table></div>
-    <div class="card"><b>Sueldos por pagar esta semana</b>${pend.map(e => `<div class="row" style="padding:8px 0;border-bottom:1px solid var(--line)"><span class="grow">${esc(e.nombre)} <span class="mut">${esc(e.puesto)}</span></span><b>${money(e.sueldo_semanal)}</b><button data-pg="${e.id}" style="min-height:40px;padding:6px 12px">Pagar</button></div>`).join('') || '<p class="mut" style="margin:6px 0">Todos pagados (o no hay sueldos dados de alta).</p>'}</div>
-    <div class="card"><b>Pagado a proveedores</b>${Object.entries(porProv).sort((a, b) => b[1] - a[1]).map(([n, m]) => `<div class="row" style="padding:6px 0"><span class="grow">${esc(n)}</span><b>${money(m)}</b></div>`).join('') || '<p class="mut" style="margin:6px 0">Sin pagos esta semana.</p>'}</div>
-    <div class="card"><b>Salidas de la semana</b>${egr.map(e => `<div class="row" style="padding:8px 0;border-bottom:1px solid var(--line)"><span class="grow"><span class="chip ${e.tipo}">${e.tipo}</span> ${esc(e.concepto)}<br><small class="mut">${e.fecha.slice(8)}/${e.fecha.slice(5, 7)} · ${esc(e.proveedores?.nombre || e.empleados?.nombre || '')} · ${e.forma_pago}</small></span><b>${money(e.monto)}</b><button data-x="${e.id}" style="min-height:38px;padding:4px 10px">✕</button></div>`).join('') || '<p class="mut" style="margin:6px 0">Sin salidas.</p>'}</div>`;
-  const mover = n => { const d = lunes(SEMANA); d.setDate(d.getDate() + n); SEMANA = ymd(d); run(semana); };
-  $('#ant').onclick = () => mover(-7); $('#sig').onclick = () => mover(7); $('#hoyb').onclick = () => { SEMANA = hoy(); run(semana); };
-  document.querySelectorAll('[data-pg]').forEach(b => b.onclick = () => { const e = pend.find(x => x.id == b.dataset.pg); PRE = { tipo: 'sueldo', empleado_id: e.id, concepto: 'Sueldo semana ' + desde.slice(5).split('-').reverse().join('/'), monto: e.sueldo_semanal }; TAB = 'salidas'; pintar(); });
+  const etq = REP.per === 'dia' ? fdia(desde) : REP.per === 'mes' ? `${['enero', 'febrero', 'marzo', 'abril', 'mayo', 'junio', 'julio', 'agosto', 'septiembre', 'octubre', 'noviembre', 'diciembre'][+desde.slice(5, 7) - 1]} ${desde.slice(0, 4)}` : `${fd(desde)} – ${fd(hasta)}`;
+  const chip = (act, attrs, txt) => `<button class="${act ? 'pri' : ''}" ${attrs} style="min-height:40px;padding:6px 14px">${txt}</button>`;
+  const sinDias = Math.max(0, Math.round((new Date(hasta) - new Date(desde)) / 864e5) + 1 - lista.length);
+
+  $('#m').innerHTML = `<div class="row wrap" style="margin-bottom:10px;gap:6px">${[['dia', 'Hoy'], ['semana', 'Semana'], ['mes', 'Mes'], ['rango', 'Fechas']].map(([k, n]) => chip(REP.per === k, `data-per="${k}"`, n)).join('')}</div>
+    ${REP.per === 'rango' ? `<div class="row" style="margin-bottom:10px"><input type="date" id="d1" value="${REP.d1}"><span class="mut">a</span><input type="date" id="d2" value="${REP.d2}"></div>`
+      : `<div class="row" style="margin-bottom:10px"><button id="ant" style="min-height:42px">←</button><b class="grow" style="text-align:center;font-size:18px">${etq}</b><button id="sig" style="min-height:42px">→</button></div>`}
+    <div class="stat" style="grid-template-columns:repeat(3,1fr)"><div class="card"><div class="mut">Entradas</div><div class="big" style="font-size:21px">${money(ventas)}</div></div>
+      <div class="card"><div class="mut">Salidas</div><div class="big" style="font-size:21px">${money(sal)}</div></div>
+      <div class="card"><div class="mut">Balance</div><div class="big ${bal < 0 ? 'neg' : 'ok'}" style="font-size:21px">${money(bal)}</div></div></div>
+    ${propinas ? `<p class="mut" style="margin:-4px 2px 10px">Propinas del periodo (aparte, no cuentan): ${money(propinas)}</p>` : ''}
+    ${ventas === 0 && hasta >= hoy() ? '<p class="mut" style="margin:-4px 2px 10px">Las ventas de cada día aparecen cuando se hace el corte Z.</p>' : ''}
+    <div class="card"><b>Por día</b>${lista.map(d => `<div class="dia" data-f="${d.f}" style="padding:10px 0;border-bottom:1px solid var(--line);cursor:pointer">
+        <div class="row"><span class="grow">${fdia(d.f)}</span><span style="min-width:84px;text-align:right">${money(d.ventas)}</span><span style="min-width:84px;text-align:right" class="mut">${d.sal ? '-' + money(d.sal) : ''}</span><b style="min-width:84px;text-align:right" class="${d.ventas - d.sal < 0 ? 'neg' : ''}">${money(d.ventas - d.sal)}</b></div>
+        <div class="det hide" style="margin-top:6px;padding-left:6px;font-size:15px">${[['Efectivo', d.efectivo], ['Tarjeta', d.tarjeta], ['Transferencia', d.transferencia], ['Otro', d.otro]].filter(x => x[1]).map(x => `<div class="row"><span class="grow mut">${x[0]}</span>${money(x[1])}</div>`).join('')}
+          ${d.eg.map(e => `<div class="row"><span class="grow mut">− ${esc(e.concepto)}${nombreE(e) ? ' · ' + esc(nombreE(e)) : ''}</span>${money(e.monto)}</div>`).join('')}</div></div>`).join('') || '<p class="mut" style="margin:8px 0">Sin movimiento en este periodo.</p>'}
+      ${lista.length ? `<div class="row mut" style="font-size:13px;padding-top:6px"><span class="grow">Toca un día para ver detalle${sinDias ? ` · ${sinDias} sin movimiento` : ''}</span><span style="min-width:84px;text-align:right">Ventas</span><span style="min-width:84px;text-align:right">Salidas</span><span style="min-width:84px;text-align:right">Balance</span></div>` : ''}</div>
+    ${egr.length ? `<div class="card"><div class="row" style="margin-bottom:8px"><b class="grow">Salidas</b><b>${money(totFil)}</b></div>
+      <div class="row wrap" style="gap:6px;margin-bottom:8px">${[['todo', 'Todas'], ['proveedor', 'Proveedores'], ['sueldo', 'Sueldos'], ['otro', 'Otros']].map(([k, n]) => chip(REP.tipo === k, `data-tipo="${k}"`, n)).join('')}</div>
+      ${REP.tipo === 'proveedor' && Object.keys(provs).length > 1 ? `<select id="fprov" style="margin-bottom:8px"><option value="">Todos los proveedores</option>${Object.entries(provs).sort((a, b) => b[1] - a[1]).map(([n, m]) => `<option value="${esc(n)}" ${REP.prov === n ? 'selected' : ''}>${esc(n)} — ${money(m)}</option>`).join('')}</select>` : ''}
+      ${vis.map(e => `<div class="row" style="padding:8px 0;border-top:1px solid var(--line)"><span class="grow"><span class="chip ${e.tipo}">${e.tipo}</span> ${esc(e.concepto)}<br><small class="mut">${fd(e.fecha)}${nombreE(e) ? ' · ' + esc(nombreE(e)) : ''} · ${e.forma_pago}</small></span><b>${money(e.monto)}</b><button data-x="${e.id}" style="min-height:36px;padding:2px 10px">✕</button></div>`).join('') || '<p class="mut" style="margin:6px 0">Nada con ese filtro.</p>'}
+      ${fil.length > 8 ? `<button id="vt" style="width:100%;margin-top:8px;min-height:40px">${REP.todas ? 'Ver menos' : `Ver las ${fil.length}`}</button>` : ''}</div>` : ''}
+    ${pend.length ? `<div class="card"><b>Sueldos por pagar esta semana</b>${pend.map(e => `<div class="row" style="padding:8px 0;border-top:1px solid var(--line)"><span class="grow">${esc(e.nombre)} <span class="mut">${esc(e.puesto)}</span></span><b>${money(e.sueldo_semanal)}</b><button data-pg="${e.id}" style="min-height:38px;padding:4px 12px">Pagar</button></div>`).join('')}</div>` : ''}`;
+
+  const rec = () => run(semana);
+  document.querySelectorAll('[data-per]').forEach(b => b.onclick = () => { REP.per = b.dataset.per; REP.ref = hoy(); REP.tipo = 'todo'; REP.prov = ''; REP.todas = false; rec(); });
+  $('#ant') && ($('#ant').onclick = () => { moverRep(-1); rec(); }); $('#sig') && ($('#sig').onclick = () => { moverRep(1); rec(); });
+  $('#d1') && ($('#d1').onchange = e => { REP.d1 = e.target.value || REP.d1; rec(); }); $('#d2') && ($('#d2').onchange = e => { REP.d2 = e.target.value || REP.d2; rec(); });
+  document.querySelectorAll('[data-tipo]').forEach(b => b.onclick = () => { REP.tipo = b.dataset.tipo; REP.prov = ''; REP.todas = false; rec(); });
+  $('#fprov') && ($('#fprov').onchange = e => { REP.prov = e.target.value; rec(); });
+  $('#vt') && ($('#vt').onclick = () => { REP.todas = !REP.todas; rec(); });
+  document.querySelectorAll('.dia').forEach(r => r.onclick = () => r.querySelector('.det').classList.toggle('hide'));
+  document.querySelectorAll('[data-pg]').forEach(b => b.onclick = () => { const e = pend.find(x => x.id == b.dataset.pg); PRE = { tipo: 'sueldo', empleado_id: e.id, concepto: 'Sueldo semana ' + fd(desde), monto: e.sueldo_semanal }; TAB = 'salidas'; pintar(); });
   document.querySelectorAll('[data-x]').forEach(b => b.onclick = () => { if (confirm('¿Cancelar esta salida?')) run(async () => { ok(await sb.from('egresos').update({ cancelado: true }).eq('id', b.dataset.x)); toast('Cancelada', 'ok'); semana(); }); });
+}
+
+// ---------- REPORTES (detalle) ----------
+let RT = { tipo: 'entradas', prov: '', ts: 'todo' };
+const MESES_L = ['enero', 'febrero', 'marzo', 'abril', 'mayo', 'junio', 'julio', 'agosto', 'septiembre', 'octubre', 'noviembre', 'diciembre'];
+const sumar = (a, k) => a.reduce((s, x) => s + (+x[k] || 0), 0);
+const diasEntre = (a, b) => Math.round((new Date(b + 'T00:00') - new Date(a + 'T00:00')) / 864e5) + 1;
+function prevRango(d, h) { const n = diasEntre(d, h), x = new Date(d + 'T00:00'); const h2 = new Date(x); h2.setDate(x.getDate() - 1); const d2 = new Date(x); d2.setDate(x.getDate() - n); return [ymd(d2), ymd(h2)]; }
+function vsHTML(a, b, masEsMalo) { if (!b) return ''; const v = (a - b) / b * 100, bueno = masEsMalo ? v <= 0 : v >= 0; return `<span class="${bueno ? 'ok' : 'neg'}" style="font-size:14px">${v >= 0 ? '▲' : '▼'} ${Math.abs(v).toFixed(0)}% vs periodo anterior (${money(b)})</span>`; }
+const filaT = (a, b, neg) => `<div class="row" style="padding:7px 0;border-top:1px solid var(--line)"><span class="grow">${a}</span><b class="${neg ? 'neg' : ''}">${b}</b></div>`;
+const pc = (x, t) => t ? ` <span class="mut">${(x / t * 100).toFixed(0)}%</span>` : '';
+function descargar(nombre, filas) {
+  const csv = filas.map(r => r.map(c => `"${String(c ?? '').replace(/"/g, '""')}"`).join(',')).join('\n');
+  const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob(['﻿' + csv], { type: 'text/csv;charset=utf-8' })); a.download = nombre; a.click();
+}
+function hdrPeriodo(desde, hasta) {
+  const etq = REP.per === 'dia' ? fdia(desde) : REP.per === 'mes' ? `${MESES_L[+desde.slice(5, 7) - 1]} ${desde.slice(0, 4)}` : `${fd(desde)} – ${fd(hasta)}`;
+  const chip = (act, attrs, txt) => `<button class="${act ? 'pri' : ''}" ${attrs} style="min-height:40px;padding:6px 14px">${txt}</button>`;
+  return `<div class="row wrap" style="margin-bottom:10px;gap:6px">${[['dia', 'Hoy'], ['semana', 'Semana'], ['mes', 'Mes'], ['rango', 'Fechas']].map(([k, n]) => chip(REP.per === k, `data-per="${k}"`, n)).join('')}</div>` +
+    (REP.per === 'rango' ? `<div class="row" style="margin-bottom:10px"><input type="date" id="d1" value="${REP.d1}"><span class="mut">a</span><input type="date" id="d2" value="${REP.d2}"></div>`
+      : `<div class="row" style="margin-bottom:10px"><button id="ant" style="min-height:42px">←</button><b class="grow" style="text-align:center;font-size:18px">${etq}</b><button id="sig" style="min-height:42px">→</button></div>`);
+}
+function bindPeriodo(rec) {
+  document.querySelectorAll('[data-per]').forEach(b => b.onclick = () => { REP.per = b.dataset.per; REP.ref = hoy(); rec(); });
+  $('#ant') && ($('#ant').onclick = () => { moverRep(-1); rec(); }); $('#sig') && ($('#sig').onclick = () => { moverRep(1); rec(); });
+  $('#d1') && ($('#d1').onchange = e => { REP.d1 = e.target.value || REP.d1; rec(); }); $('#d2') && ($('#d2').onchange = e => { REP.d2 = e.target.value || REP.d2; rec(); });
+}
+
+async function reportes() {
+  const [desde, hasta] = rangoRep();
+  if (desde > hasta) throw new Error('La fecha inicial es mayor que la final');
+  const [pd, ph] = prevRango(desde, hasta), nDias = diasEntre(desde, hasta);
+  const entr = RT.tipo === 'entradas';
+  const [cur, prev] = await Promise.all([
+    entr ? sb.from('cortes').select('*').gte('fecha', desde).lte('fecha', hasta).order('fecha').then(ok)
+      : sb.from('egresos').select('*,proveedores(nombre),empleados(nombre)').gte('fecha', desde).lte('fecha', hasta).eq('cancelado', false).order('fecha').order('id').then(ok),
+    entr ? sb.from('cortes').select('ventas_netas').gte('fecha', pd).lte('fecha', ph).then(ok)
+      : sb.from('egresos').select('monto,tipo').gte('fecha', pd).lte('fecha', ph).eq('cancelado', false).then(ok)]);
+  const emps = RT.tipo === 'sueldos' ? await sb.from('empleados').select('*').eq('activo', true).order('nombre').then(ok) : [];
+  const tabs = [['entradas', 'Entradas'], ['salidas', 'Salidas'], ['proveedores', 'Proveedores'], ['sueldos', 'Sueldos']];
+  let cuerpo = '', csv = null;
+  const nom = e => e.proveedores?.nombre || e.empleados?.nombre || '';
+
+  if (entr) {
+    const ventas = sumar(cur, 'ventas_netas'), brutas = sumar(cur, 'ventas_brutas'), desc = sumar(cur, 'descuentos'), cuentas = sumar(cur, 'cuentas'), pers = sumar(cur, 'personas'), prop = sumar(cur, 'propinas');
+    const forma = [['Efectivo', sumar(cur, 'efectivo')], ['Tarjeta', sumar(cur, 'tarjeta')], ['Transferencia', sumar(cur, 'transferencia')], ['Otro', sumar(cur, 'otro')]].filter(x => x[1]);
+    const mejor = cur.slice().sort((a, b) => b.ventas_netas - a.ventas_netas)[0], dif = sumar(cur, 'diferencia');
+    const cat = {}, mes = {};
+    for (const c of cur) { (c.detalle?.porCategoria || []).forEach(x => { cat[x.nombre] = (cat[x.nombre] || 0) + +x.venta; }); (c.detalle?.porMesero || []).forEach(x => { const m = mes[x.nombre] || (mes[x.nombre] = { v: 0, c: 0 }); m.v += +x.venta; m.c += +x.cuentas; }); }
+    cuerpo = `<div class="card"><div class="mut">Ventas netas</div><div class="big">${money(ventas)}</div>${vsHTML(ventas, sumar(prev, 'ventas_netas'))}
+      ${filaT('Cuentas cobradas', cuentas)}${filaT('Ticket promedio', money(cuentas ? ventas / cuentas : 0))}${filaT('Personas atendidas', pers + (pers ? ' · ' + money(ventas / pers) + ' c/u' : ''))}
+      ${filaT('Promedio por día con corte', money(cur.length ? ventas / cur.length : 0))}${mejor ? filaT('Mejor día', `${fdia(mejor.fecha)} · ${money(mejor.ventas_netas)}`) : ''}
+      ${filaT('Venta bruta', money(brutas))}${desc ? filaT('Descuentos', '-' + money(desc)) : ''}${filaT('Propinas (aparte)', money(prop))}${dif ? filaT('Diferencia de caja acumulada', money(dif), dif < 0) : ''}</div>
+      ${forma.length ? `<div class="card"><b>Cómo pagaron</b>${forma.map(x => filaT(x[0] + pc(x[1], ventas), money(x[1]))).join('')}</div>` : ''}
+      ${Object.keys(cat).length ? `<div class="card"><b>Por categoría</b>${Object.entries(cat).sort((a, b) => b[1] - a[1]).map(([n, v]) => filaT(esc(n) + pc(v, brutas), money(v))).join('')}</div>` : ''}
+      ${Object.keys(mes).length ? `<div class="card"><b>Por mesero</b>${Object.entries(mes).sort((a, b) => b[1].v - a[1].v).map(([n, m]) => filaT(`${esc(n)} <span class="mut">${m.c} cuentas</span>`, money(m.v))).join('')}</div>` : ''}
+      <div class="card"><b>Por día</b>${cur.map(c => filaT(`${fdia(c.fecha)} <span class="mut">${c.cuentas} cuentas</span>`, money(c.ventas_netas))).join('') || '<p class="mut">Sin cortes en este periodo.</p>'}</div>`;
+    csv = [['Fecha', 'Cuentas', 'Personas', 'Ventas netas', 'Descuentos', 'Efectivo', 'Tarjeta', 'Transferencia', 'Otro', 'Propinas', 'Diferencia caja'], ...cur.map(c => [c.fecha, c.cuentas, c.personas, c.ventas_netas, c.descuentos, c.efectivo, c.tarjeta, c.transferencia, c.otro, c.propinas, c.diferencia])];
+  }
+
+  if (RT.tipo === 'salidas') {
+    const tot = sumar(cur, 'monto'), tipos = ['proveedor', 'sueldo', 'otro'].map(t => [t, sumar(cur.filter(e => e.tipo === t), 'monto')]).filter(x => x[1]);
+    const formas = {}; cur.forEach(e => { formas[e.forma_pago] = (formas[e.forma_pago] || 0) + +e.monto; });
+    const dias = new Set(cur.map(e => e.fecha)).size, lista = cur.filter(e => RT.ts === 'todo' || e.tipo === RT.ts).slice().reverse();
+    cuerpo = `<div class="card"><div class="mut">Total de salidas</div><div class="big">${money(tot)}</div>${vsHTML(tot, sumar(prev, 'monto'), true)}
+      ${filaT('Movimientos', cur.length)}${filaT('Promedio por día con salidas', money(dias ? tot / dias : 0))}${filaT('Promedio por día del periodo', money(tot / nDias))}</div>
+      ${tipos.length ? `<div class="card"><b>Por tipo</b>${tipos.map(([t, m]) => filaT(({ proveedor: 'Proveedores', sueldo: 'Sueldos', otro: 'Otros gastos' })[t] + pc(m, tot), money(m))).join('')}</div>` : ''}
+      ${Object.keys(formas).length ? `<div class="card"><b>Forma de pago</b>${Object.entries(formas).map(([f, m]) => filaT(f + pc(m, tot), money(m))).join('')}</div>` : ''}
+      <div class="card"><b>Detalle</b><div class="row wrap" style="gap:6px;margin:8px 0">${[['todo', 'Todas'], ['proveedor', 'Proveedores'], ['sueldo', 'Sueldos'], ['otro', 'Otros']].map(([k, n]) => `<button class="${RT.ts === k ? 'pri' : ''}" data-ts="${k}" style="min-height:38px;padding:4px 12px">${n}</button>`).join('')}</div>
+      ${lista.map(e => `<div class="row" style="padding:8px 0;border-top:1px solid var(--line)"><span class="grow"><span class="chip ${e.tipo}">${e.tipo}</span> ${esc(e.concepto)}<br><small class="mut">${fd(e.fecha)}${nom(e) ? ' · ' + esc(nom(e)) : ''} · ${e.forma_pago}${e.nota ? ' · ' + esc(e.nota) : ''}</small></span><b>${money(e.monto)}</b></div>`).join('') || '<p class="mut">Nada con ese filtro.</p>'}</div>`;
+    csv = [['Fecha', 'Tipo', 'Concepto', 'Proveedor/Empleado', 'Forma de pago', 'Monto', 'Nota'], ...cur.map(e => [e.fecha, e.tipo, e.concepto, nom(e), e.forma_pago, e.monto, e.nota])];
+  }
+
+  if (RT.tipo === 'proveedores') {
+    const pv = cur.filter(e => e.tipo === 'proveedor'), tot = sumar(pv, 'monto'), g = {};
+    pv.forEach(e => { const n = nom(e) || '—', x = g[n] || (g[n] = { m: 0, n: 0, u: '' }); x.m += +e.monto; x.n++; if (e.fecha > x.u) x.u = e.fecha; });
+    const nombres = Object.keys(g).sort((a, b) => g[b].m - g[a].m); if (RT.prov && !g[RT.prov]) RT.prov = '';
+    const sel = RT.prov ? pv.filter(e => nom(e) === RT.prov).slice().reverse() : [];
+    cuerpo = `<div class="card"><div class="mut">Pagado a proveedores</div><div class="big">${money(tot)}</div>${vsHTML(tot, sumar(prev.filter(e => e.tipo === 'proveedor'), 'monto'), true)}${filaT('Proveedores pagados', nombres.length)}${filaT('Pagos', pv.length)}</div>
+      <div class="card"><b>Por proveedor</b> <span class="mut" style="font-size:14px">· toca uno para ver sus pagos</span>${nombres.map(n => `<div class="row prv" data-p="${esc(n)}" style="padding:9px 0;border-top:1px solid var(--line);cursor:pointer;${RT.prov === n ? 'background:#fff7d6' : ''}"><span class="grow">${esc(n)}${pc(g[n].m, tot)}<br><small class="mut">${g[n].n} pago${g[n].n > 1 ? 's' : ''} · último ${fd(g[n].u)}</small></span><b>${money(g[n].m)}</b></div>`).join('') || '<p class="mut">Sin pagos a proveedores en este periodo.</p>'}</div>
+      ${sel.length ? `<div class="card"><b>${esc(RT.prov)}</b>${sel.map(e => filaT(`${fd(e.fecha)} · ${esc(e.concepto)} <span class="mut">${e.forma_pago}</span>`, money(e.monto))).join('')}</div>` : ''}`;
+    csv = [['Proveedor', 'Pagos', 'Total', 'Último pago'], ...nombres.map(n => [n, g[n].n, g[n].m, g[n].u])];
+  }
+
+  if (RT.tipo === 'sueldos') {
+    const sd = cur.filter(e => e.tipo === 'sueldo'), tot = sumar(sd, 'monto'), semanas = Math.max(1, Math.ceil(nDias / 7));
+    const pag = {}; sd.forEach(e => { const x = pag[e.empleado_id] || (pag[e.empleado_id] = { m: 0, n: 0 }); x.m += +e.monto; x.n++; });
+    const conSueldo = emps.filter(e => +e.sueldo_semanal > 0), esperado = conSueldo.reduce((s, e) => s + e.sueldo_semanal * semanas, 0);
+    cuerpo = `<div class="card"><div class="mut">Sueldos pagados</div><div class="big">${money(tot)}</div>${vsHTML(tot, sumar(prev.filter(e => e.tipo === 'sueldo'), 'monto'), true)}
+      ${conSueldo.length ? filaT(`Nómina esperada (${semanas} sem.)`, money(esperado)) + filaT('Falta por pagar', money(Math.max(0, esperado - tot)), esperado - tot > 0) : ''}</div>
+      <div class="card"><b>Por empleado</b>${emps.map(e => { const p = pag[e.id] || { m: 0, n: 0 }, deb = e.sueldo_semanal * semanas - p.m; return `<div class="row" style="padding:9px 0;border-top:1px solid var(--line)"><span class="grow">${esc(e.nombre)} <span class="mut">${esc(e.puesto)}</span><br><small class="mut">${+e.sueldo_semanal ? `sueldo ${money(e.sueldo_semanal)}/sem · ` : ''}${p.n} pago${p.n === 1 ? '' : 's'}${+e.sueldo_semanal && deb > 0.009 ? ` · <span class="neg">falta ${money(deb)}</span>` : ''}</small></span><b>${money(p.m)}</b></div>`; }).join('') || '<p class="mut">Da de alta al personal en la pestaña Personal.</p>'}</div>
+      ${sd.length ? `<div class="card"><b>Pagos del periodo</b>${sd.slice().reverse().map(e => filaT(`${fd(e.fecha)} · ${esc(nom(e))} <span class="mut">${esc(e.concepto)}</span>`, money(e.monto))).join('')}</div>` : ''}`;
+    csv = [['Fecha', 'Empleado', 'Concepto', 'Forma de pago', 'Monto'], ...sd.map(e => [e.fecha, nom(e), e.concepto, e.forma_pago, e.monto])];
+  }
+
+  $('#m').innerHTML = `<div class="row wrap" style="gap:6px;margin-bottom:10px">${tabs.map(([k, n]) => `<button class="${RT.tipo === k ? 'pri' : ''}" data-rt="${k}" style="min-height:42px;padding:6px 14px">${n}</button>`).join('')}</div>${hdrPeriodo(desde, hasta)}${cuerpo}
+    <button id="csv" style="width:100%;margin-top:4px">⬇ Descargar en Excel (CSV)</button>`;
+  const rec = () => run(reportes);
+  document.querySelectorAll('[data-rt]').forEach(b => b.onclick = () => { RT.tipo = b.dataset.rt; RT.prov = ''; RT.ts = 'todo'; rec(); });
+  document.querySelectorAll('[data-ts]').forEach(b => b.onclick = () => { RT.ts = b.dataset.ts; rec(); });
+  document.querySelectorAll('.prv').forEach(r => r.onclick = () => { RT.prov = RT.prov === r.dataset.p ? '' : r.dataset.p; rec(); });
+  $('#csv').onclick = () => descargar(`mariscos-${RT.tipo}-${desde}_${hasta}.csv`, csv);
+  bindPeriodo(rec);
 }
 
 // ---------- SALIDAS (captura) ----------
